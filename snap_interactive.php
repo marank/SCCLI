@@ -44,7 +44,7 @@ if (empty($username)) {
 while ($keepRunning) {
 	echo ">> ";
 	$userInput = fgets($stdin, 1024);
-	$userInput = substr($userInput, 0, -1);
+	$userInput = trim($userInput);
 	$params = explode(" ", $userInput);
 
 	if (in_array($params[0], $availableCommands)) {
