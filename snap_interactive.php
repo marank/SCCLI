@@ -1,6 +1,6 @@
 <?php
 
-require_once("Snap-API/src/snapchat.php");
+require_once("SC-API/src/snapchat.php");
 
 //////////// CONFIG ////////////
 $username 	= ""; // Required. Your snapchat username

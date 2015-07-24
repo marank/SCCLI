@@ -1,0 +1,3 @@
+[submodule "SC-API"]
+	path = SC-API
+	url = git://github.com/marank/SC-API.git
