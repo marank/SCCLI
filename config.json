@@ -1,0 +1,12 @@
+{
+	"username": "",
+	"password": "",
+	"auth_token": "",
+	"gEmail": "",
+	"gPasswd": "",
+	"debug": false,
+	"cli": true,
+	"offline": false,
+	"noAppOpenEvent": false,
+	"forceLogin": true
+}

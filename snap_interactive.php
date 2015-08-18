@@ -2,23 +2,14 @@
 
 require_once("SC-API/src/snapchat.php");
 
-//////////// CONFIG ////////////
-$username 	= ""; // Required. Your snapchat username
-$password 	= ""; // Your snapchat password. Not required if you log in to snapchat via an existing auth token.
-$auth_token = ""; // The auth-token you want to use for logging in.
-$gEmail   	= ""; // Gmail account
-$gPasswd  	= ""; // Gmail account password
-$debug	  	= false; // Set this to true if you want to see all outgoing requests and responses from server
-$cli 	  	= true; // Set this to true to get progress information printed out via echo (only use when running in a terminal).
-
-$offline 	= false;
-////////////////////////////////
-
 echo "Interactive Snap-API\n";
+
+$config = new Configuration();
+
 
 $keepRunning = true;
 $stdin = fopen('php://stdin', 'r');
-$availableCommands = array("close", "get", "write", "fetch", "send", "friend", "sync", "set", "login", "snaps", "stories", "output");
+$availableCommands = array("close", "get", "write", "fetch", "send", "friend", "sync", "set", "login", "snaps", "stories", "output", "add");
 $simpleCommands	   = array("close", "login", "write");
 $aliases 		   = array("friends" => "friend",
 						   "exit"    => "close",
@@ -28,22 +19,22 @@ $aliases 		   = array("friends" => "friend",
 
 if ($argc > 1) {
 	if ($argv[1] == "offline") {
-		$offline = true;
+		$config->offline = true;
 		echo "Snap-API is in offline mode. Restart the script to go back online.\n";
 	}
 }
 
-if (empty($username)) {
-	echo "No username specified. Please login manually using the login command.\n";
-} else {
-	$snapchat = new Snapchat($username, $gEmail, $gPasswd, $debug, $cli);
-	$snapchat->login($password, $auth_token);
+if (isset($config->username)) {
+	$snapchat = new Snapchat($config->username, $config->gEmail, $config->gPasswd, $config->debug, $config->cli);
+	$snapchat->login($config->password, $config->auth_token, $config->noAppOpenEvent, $config->forceLogin);
 	$snapchat->getUpdates();
+} else {
+	echo "No username specified. Please login manually using the login command.\n";
 }
 
 while ($keepRunning) {
 	echo ">> ";
-	$userInput = fgets($stdin, 1024);
+	$userInput = fgets($stdin);
 	$userInput = trim($userInput);
 	$params = explode(" ", $userInput);
 
@@ -76,19 +67,18 @@ function close($params) {
 }
 
 function login($params) {
-	global $snapchat, $username, $gEmail, $gPasswd, $debug, $cli, $password, $auth_token;
+	global $snapchat, $config;
 
 	if (count($params) == 1) {
 		echo "Not enough arguments for '{$params[0]}'.\n";
 		return false;
 	}
 
-	$username 	= $params[1];
-	//$password 	= ((count($params) == 2) ? "" : (($params[2] == "password") ? $params[3] : ""));
-	$auth_token	= ((count($params) == 2) ? "" : (($params[2] == "auth-token") ? $params[3] : ""));
+	$config->username 	= $params[1];
+	$config->auth_token	= ((count($params) == 2) ? "" : (($params[2] == "auth-token") ? $params[3] : ""));
 
-	$snapchat = new Snapchat($username, $gEmail, $gPasswd, $debug, $cli);
-	$snapchat->login($password, $auth_token);
+	$snapchat = new Snapchat($config->username, $config->gEmail, $config->gPasswd, $config->debug, $config->cli);
+	$snapchat->login($config->password, $config->auth_token, $config->noAppOpenEvent, $config->forceLogin);
 	$snapchat->getUpdates();
 }
 
@@ -599,6 +589,22 @@ function friend($subcommand, $params) {
 	}
 }
 
+function add($subcommand, $params) {
+	global $snapchat;
+
+	if (count($params) < 2) {
+		echo "Not enough arguments for '{$params[0]}'.\n";
+		return false;
+	}
+
+	friend("add", array("friend", "add", $params[1]));
+
+	if (count($params) > 2) {
+		$displayname = implode(" ", array_slice($params, 1));
+		echo $snapchat->setDisplayName($params[1], $displayname)."\n";
+	}
+}
+
 function send($subcommand, $params) {
 	global $snapchat;
 
@@ -727,4 +733,85 @@ function endsWith($haystack, $needle) {
     return $needle === "" || (($temp = strlen($haystack) - strlen($needle)) >= 0 && strpos($haystack, $needle, $temp) !== FALSE);
 }
 
-?>
+class Configuration
+{
+	public function __get($k)
+	{
+		$values = json_decode(file_get_contents("config.json"), true);
+
+		if (isset($values[$k]))
+			return $values[$k];
+		else
+			return null;
+	}
+
+	public function __set($k, $v)
+	{
+		$values = json_decode(file_get_contents("config.json"), true);
+		$values[$k] = $v;
+		file_put_contents("config.json", $this->prettyPrint(json_encode($values)));
+	}
+
+	public function __isset($k)
+	{
+		$values = json_decode(file_get_contents("config.json"), true);
+		return isset($values[$k]);
+	}
+
+	public function prettyPrint($json)
+	{
+	    $result = '';
+	    $level = 0;
+	    $in_quotes = false;
+	    $in_escape = false;
+	    $ends_line_level = NULL;
+	    $json_length = strlen($json);
+
+	    for( $i = 0; $i < $json_length; $i++ ) {
+	        $char = $json[$i];
+	        $new_line_level = NULL;
+	        $post = "";
+	        if( $ends_line_level !== NULL ) {
+	            $new_line_level = $ends_line_level;
+	            $ends_line_level = NULL;
+	        }
+	        if ( $in_escape ) {
+	            $in_escape = false;
+	        } else if( $char === '"' ) {
+	            $in_quotes = !$in_quotes;
+	        } else if( ! $in_quotes ) {
+	            switch( $char ) {
+	                case '}': case ']':
+	                    $level--;
+	                    $ends_line_level = NULL;
+	                    $new_line_level = $level;
+	                    break;
+
+	                case '{': case '[':
+	                    $level++;
+	                case ',':
+	                    $ends_line_level = $level;
+	                    break;
+
+	                case ':':
+	                    $post = " ";
+	                    break;
+
+	                case " ": case "\t": case "\n": case "\r":
+	                    $char = "";
+	                    $ends_line_level = $new_line_level;
+	                    $new_line_level = NULL;
+	                    break;
+	            }
+	        } else if ( $char === '\\' ) {
+	            $in_escape = true;
+	        }
+	        if( $new_line_level !== NULL ) {
+	            $result .= "\n".str_repeat( "\t", $new_line_level );
+	        }
+	        $result .= $char.$post;
+	    }
+
+	    return $result;
+	}
+}
