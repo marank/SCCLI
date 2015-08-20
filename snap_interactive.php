@@ -2,14 +2,16 @@
 
 require_once("SC-API/src/snapchat.php");
 
+const AUTH_DATA_FOLDER = "auth";
+
 echo "Interactive Snap-API\n";
 
 $config = new Configuration();
-
+$friendsDB = null;
 
 $keepRunning = true;
 $stdin = fopen('php://stdin', 'r');
-$availableCommands = array("close", "get", "write", "fetch", "send", "friend", "sync", "set", "login", "snaps", "stories", "output", "add");
+$availableCommands = array("close", "get", "write", "fetch", "send", "friend", "sync", "set", "login", "snaps", "stories", "output", "add", "db");
 $simpleCommands	   = array("close", "login", "write");
 $aliases 		   = array("friends" => "friend",
 						   "exit"    => "close",
@@ -25,9 +27,9 @@ if ($argc > 1) {
 }
 
 if (isset($config->username)) {
-	$snapchat = new Snapchat($config->username, $config->gEmail, $config->gPasswd, $config->debug, $config->cli);
+	$snapchat = new Snapchat($config->username, $config->gEmail, $config->gPasswd, AUTH_DATA_FOLDER, $config->debug, $config->cli);
 	$snapchat->login($config->password, $config->auth_token, $config->noAppOpenEvent, $config->forceLogin);
-	$snapchat->getUpdates();
+	$friendsDB = new FriendsDatabase($snapchat);
 } else {
 	echo "No username specified. Please login manually using the login command.\n";
 }
@@ -67,19 +69,17 @@ function close($params) {
 }
 
 function login($params) {
-	global $snapchat, $config;
+	global $snapchat, $config, $friendsDB;
 
-	if (count($params) == 1) {
-		echo "Not enough arguments for '{$params[0]}'.\n";
-		return false;
-	}
+	if (count($params) == 2)
+		$config->username 	= $params[1];
 
-	$config->username 	= $params[1];
-	$config->auth_token	= ((count($params) == 2) ? "" : (($params[2] == "auth-token") ? $params[3] : ""));
+	if (count($params) == 3)
+		$config->auth_token	= ((count($params) == 2) ? "" : (($params[2] == "auth-token") ? $params[3] : ""));
 
-	$snapchat = new Snapchat($config->username, $config->gEmail, $config->gPasswd, $config->debug, $config->cli);
+	$snapchat = new Snapchat($config->username, $config->gEmail, $config->gPasswd, AUTH_DATA_FOLDER, $config->debug, $config->cli);
 	$snapchat->login($config->password, $config->auth_token, $config->noAppOpenEvent, $config->forceLogin);
-	$snapchat->getUpdates();
+	$friendsDB = new FriendsDatabase($snapchat);
 }
 
 function set($subcommand, $params) {
@@ -514,7 +514,7 @@ function output($subcommand, $params) {
 }
 
 function friend($subcommand, $params) {
-	global $snapchat;
+	global $snapchat, $friendsDB;
 
 	if (count($params) == 1) {
 		echo "Not enough arguments for '{$params[0]}'.\n";
@@ -533,6 +533,7 @@ function friend($subcommand, $params) {
 					echo "$friend is your friend already.\n";
 				} else {
 					echo $snapchat->addFriend($friend)."\n";
+					$friendsDB->addFriend($friend);
 				}
 			}
 			break;
@@ -541,6 +542,7 @@ function friend($subcommand, $params) {
 			foreach (compileList(array_slice($params, 2)) as $friend) {
 				if (in_array($friend, $snapchat->getFriends())) {
 					echo $snapchat->deleteFriend($friend)."\n";
+					$friendsDB->removeFriend($friend);
 				} else {
 					echo "$friend is not your friend.\n";
 				}
@@ -557,6 +559,7 @@ function friend($subcommand, $params) {
 
 			if (in_array($params[2], $snapchat->getFriends())) {
 				echo $snapchat->setDisplayName($params[2], $displayname)."\n";
+				$friendsDB->set($friend, "display", $displayname);
 			} else {
 				echo "$params[2] is not your friend.\n";
 			}
@@ -590,18 +593,91 @@ function friend($subcommand, $params) {
 }
 
 function add($subcommand, $params) {
-	global $snapchat;
+	global $snapchat, $friendsDB;
 
 	if (count($params) < 2) {
 		echo "Not enough arguments for '{$params[0]}'.\n";
 		return false;
 	}
 
-	friend("add", array("friend", "add", $params[1]));
+	$friend = $params[1];
+	$display = null;
+	$age = null;
+	$location = null;
 
-	if (count($params) > 2) {
-		$displayname = implode(" ", array_slice($params, 1));
-		echo $snapchat->setDisplayName($params[1], $displayname)."\n";
+	if (count($params) > 2)
+		$display = implode(" ", array_slice($params, 1));
+
+	if (count($params) == 3)
+		$age = $params[2];
+
+	if (count($params) == 4)
+		$location = $params[3];
+
+	friend("add", array("friend", "add", $friend));
+
+	if (!is_null($display)) {
+		echo $snapchat->setDisplayName($friend, $display)."\n";
+	}
+
+	$friendsDB->addFriend($friend, time(), $display, $age, $location);
+}
+
+function db($subcommand, $params) {
+	global $snapchat, $friendsDB;
+
+	if (count($params) < 2) {
+		echo "Not enough arguments for '{$params[0]}'.\n";
+		return false;
+	}
+
+	switch ($subcommand) {
+		case 'fav':
+			if (!$friendsDB->isFriend($params[2])) {
+				echo "Friend not found.\n";
+				return false;
+			}
+			$friendsDB->set($params[2], "fav", true);
+			break;
+
+		case 'update':
+			if (count($params) > 2) {
+				switch ($params[2]) {
+					case 'all':
+						$friendsDB->update();
+						$friendsDB->updateScores();
+						$friendsDB->updateActiveFriends();
+						break;
+
+					case 'scores':
+						$friendsDB->updateScores();
+						break;
+
+					case 'active':
+						$friendsDB->updateActiveFriends();
+						break;
+
+					default:
+						echo "'$params[2]' is not a valid command for '{$params[0]} {$params[1]}'.\n";
+						break;
+				}
+			} else {
+				$friendsDB->update();
+			}
+			break;
+
+		case "set":
+			if (!$friendsDB->isFriend($params[2])) {
+				echo "Friend not found.\n";
+				return false;
+			}
+			$friendsDB->set($params[2], $params[3], $params[4]);
+			break;
+
+		default:
+			echo "'$params[1]' is not a valid command for '{$params[0]}'.\n";
+			return false;
+			break;
 	}
 }
 
@@ -733,33 +809,12 @@ function endsWith($haystack, $needle) {
     return $needle === "" || (($temp = strlen($haystack) - strlen($needle)) >= 0 && strpos($haystack, $needle, $temp) !== FALSE);
 }
 
-class Configuration
+class JSON
 {
-	public function __get($k)
+	static function prettify($json)
 	{
-		$values = json_decode(file_get_contents("config.json"), true);
+		$json = json_encode($json);
 
-		if (isset($values[$k]))
-			return $values[$k];
-		else
-			return null;
-	}
-
-	public function __set($k, $v)
-	{
-		$values = json_decode(file_get_contents("config.json"), true);
-		$values[$k] = $v;
-		file_put_contents("config.json", $this->prettyPrint(json_encode($values)));
-	}
-
-	public function __isset($k)
-	{
-		$values = json_decode(file_get_contents("config.json"), true);
-		return isset($values[$k]);
-	}
-
-	public function prettyPrint($json)
-	{
 	    $result = '';
 	    $level = 0;
 	    $in_quotes = false;
@@ -813,5 +868,237 @@ class Configuration
 	    }
 
 	    return $result;
+	}
+}
+
+class Configuration
+{
+	public function __get($k)
+	{
+		$values = json_decode(file_get_contents("config.json"), true);
+
+		if (isset($values[$k]))
+			return $values[$k];
+		else
+			return null;
+	}
+
+	public function __set($k, $v)
+	{
+		$values = json_decode(file_get_contents("config.json"), true);
+		$values[$k] = $v;
+		file_put_contents("config.json", JSON::prettify($values));
+	}
+
+	public function __isset($k)
+	{
+		$values = json_decode(file_get_contents("config.json"), true);
+		return isset($values[$k]);
+	}
+}
+
+class FriendsDatabase
+{
+
+	const DATA_FILE = "friends.json";
+	const DATA_DIR  = "data";
+
+	private $snapchat = null;
+	private $_friends = array();
+
+	private $status = [
+		0 => "confirmed",
+		1 => "unconfirmed",
+		2 => "blocked",
+		3 => "deleted"
+	];
+
+	public function __construct($snapchat)
+	{
+		$this->snapchat = $snapchat;
+		$friendList = $this->snapchat->getFriends(false);
+		$friendData = $this->snapchat->getFriends(true);
+
+		if (is_file(self::DATA_FILE))
+			$this->_friends = json_decode(file_get_contents(self::DATA_FILE), true);
+	}
+
+	public function update()
+	{
+		$snapchatData 		= $this->snapchat->getUpdates();
+		$friendData 		= $this->snapchat->getFriends(true);
+		$addedFriendsData 	= $this->snapchat->getAddedFriends(true);
+
+		foreach ($friendData as $friend) {
+			if (!$this->isFriend($friend->name)) {
+				$this->_friends[$friend->name] = ["name" => $friend->name];
+			}
+			if (array_key_exists($friend->name, $addedFriendsData)) {
+				$this->_friends[$friend->name]["added_timestamp"] = round($addedFriendsData[$friend->name]->ts / 1000);
+				$this->_friends[$friend->name]["added_timestamp_r"] = date("d.m.Y H:i:s", $this->_friends[$friend->name]["added_timestamp"]);
+			}
+			$this->_friends[$friend->name]["display"] = $friend->display;
+			$this->_friends[$friend->name]["type"] = $friend->type;
+			$this->_friends[$friend->name]["type_r"] = $this->status[$friend->type];
+
+			ksort($this->_friends[$friend->name]);
+		}
+
+		foreach ($this->_friends as $friend) {
+			if (!array_key_exists($friend['name'], $friendData)) {
+				unset($this->_friends[$friend['name']]);
+			}
+		}
+
+		ksort($this->_friends);
+		$this->saveFile($this->_friends, self::DATA_FILE);
+	}
+
+	public function updateScores()
+	{
+		$friendList = array_keys($this->_friends);
+		$friendScores = $this->snapchat->getFriendScores($friendList);
+
+		foreach ($friendList as $friend) {
+			if (array_key_exists($friend, $friendScores))
+				$this->_friends[$friend]["score"] = $friendScores[$friend];
+
+			ksort($this->_friends[$friend]);
+		}
+
+		$this->saveFile($this->_friends, self::DATA_FILE);
+	}
+
+	public function updateActiveFriends()
+	{
+		$activeFriends = $this->getActiveFriends();
+
+		foreach ($this->_friends as $friend) {
+			$this->_friends[$friend['name']]["active"] = in_array($friend['name'], $activeFriends);
+			ksort($this->_friends[$friend['name']]);
+		}
+
+		$this->saveFile($this->_friends, self::DATA_FILE);
+	}
+
+	public function addFriend($friend, $time = 0, $display = null, $age = null, $location = null)
+	{
+		$data = [
+			"name" => $friend,
+			"added_timestamp" => (($time == 0) ? time() : $time),
+		];
+
+		if (!is_null($display))
+			$data["display"] = $display;
+
+		if (!is_null($age))
+			$data["age"] = $age;
+
+		if (!is_null($location))
+			$data["location"] = $location;
+
+		$this->_friends[$friend] = $data;
+		$this->saveFile($this->_friends, self::DATA_FILE);
+	}
+
+	public function removeFriend($friend)
+	{
+		if ($this->isFriend($friend))
+		{
+			unset($this->_friends[$friend]);
+			$this->saveFile($this->_friends, self::DATA_FILE);
+		}
+	}
+
+	public function isFriend($friend)
+	{
+		return array_key_exists($friend, $this->_friends);
+	}
+
+	public function set($friend, $data, $value)
+	{
+		if (is_array($data))
+		{
+			$this->_friends[$friend] = $data;
+			$this->saveFile($this->_friends, self::DATA_FILE);
+		}
+		else
+		{
+			$this->_friends[$friend][$data] = $value;
+			ksort($this->_friends[$friend]);
+			$this->saveFile($this->_friends, self::DATA_FILE);
+		}
+	}
+
+	public function get($friend, $key = NULL)
+	{
+		if ($this->isFriend($friend))
+		{
+			if (is_null($key))
+			{
+				return $this->_friends[$friend];
+			}
+			elseif (array_key_exists($key, $this->_friends[$friend]))
+			{
+				return $this->_friends[$friend][$key];
+			}
+			else
+			{
+				return NULL;
+			}
+		}
+		else
+		{
+			return NULL;
+		}
+	}
+
+	public function getActiveFriends()
+	{
+		$activeFriends		= array();
+		$dataFile 			= self::DATA_DIR . DIRECTORY_SEPARATOR . "active_friends.json";
+
+		if (is_file($dataFile))
+			$activeFriends = json_decode(file_get_contents($dataFile), true);
+
+		$conversations 		= $this->snapchat->getConversations();
+		$friendStories 		= $this->snapchat->getFriendStories();
+		$myStories 			= $this->snapchat->getMyStories();
+
+		foreach ($conversations as $conversation) {
+			foreach ($conversation->participants as $participant) {
+				if (!in_array($participant, $activeFriends)) {
+					$activeFriends[] = $participant;
+				}
+			}
+		}
+
+		foreach ($friendStories as $story) {
+			if (!in_array($story->username, $activeFriends)) {
+				$activeFriends[] = $story->username;
+			}
+		}
+
+		foreach ($myStories as $story) {
+			foreach ($story->story_notes as $notes) {
+				if (!in_array($notes->viewer, $activeFriends)) {
+					$activeFriends[] = $notes->viewer;
+				}
+			}
+		}
+
+		sort($activeFriends);
+		$this->saveFile($activeFriends, $dataFile);
+		return $activeFriends;
+	}
+
+	private function saveFile($data, $filename)
+	{
+		$this->saveJSON($data, $filename);
+	}
+
+	public function saveJSON($data, $filename)
+	{
+		file_put_contents($filename, JSON::prettify($data));
 	}
 }
